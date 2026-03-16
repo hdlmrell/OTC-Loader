@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<Import Project="LocalPaths.targets" Condition="Exists('LocalPaths.targets')" />
+
+	<PropertyGroup>
+		<TargetFramework>netstandard2.1</TargetFramework>
+		<AssemblyName>OverTheCounter-Loader</AssemblyName>
+		<RootNamespace>OverTheCounter.Loader</RootNamespace>
+		<Nullable>disable</Nullable>
+		<GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+		<NoWarn>$(NoWarn);1705;MSB3277</NoWarn>
+		<IsPackable>false</IsPackable>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- MelonLoader — available in the game's MelonLoader/net6 directory at runtime -->
+		<Reference Include="MelonLoader">
+			<HintPath>$(MelonLoaderNet6Path)\MelonLoader.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<!-- Mono.Cecil — bundled with MelonLoader, available at runtime without shipping our copy -->
+		<Reference Include="Mono.Cecil">
+			<HintPath>$(MelonLoaderNet6Path)\Mono.Cecil.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<!-- Newtonsoft.Json — bundled with MelonLoader -->
+		<Reference Include="Newtonsoft.Json">
+			<HintPath>$(MelonLoaderNet6Path)\Newtonsoft.Json.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+	</ItemGroup>
+
+	<!-- Copy loader to IL2CPP dev profile Plugins folder -->
+	<Target Name="CopyToProfile" AfterTargets="Build" Condition="'$(ModOutputPath)' != ''">
+		<MakeDir Directories="$(ModOutputPath)\Plugins" />
+		<Copy SourceFiles="$(OutputPath)$(AssemblyName).dll"
+		      DestinationFolder="$(ModOutputPath)\Plugins" />
+	</Target>
+
+	<!-- Also copy loader to Mono dev profile Plugins folder (same DLL works for both CLRs) -->
+	<Target Name="CopyToMonoProfile" AfterTargets="Build" Condition="'$(MonoModOutputPath)' != ''">
+		<MakeDir Directories="$(MonoModOutputPath)\Plugins" />
+		<Copy SourceFiles="$(OutputPath)$(AssemblyName).dll"
+		      DestinationFolder="$(MonoModOutputPath)\Plugins" />
+	</Target>
+</Project>

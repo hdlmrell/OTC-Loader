@@ -1,0 +1,28 @@
+## Build output
+[Bb]in/
+[Oo]bj/
+
+## Visual Studio
+.vs/
+*.user
+*.suo
+
+## Build artifacts
+_stage_*/
+*.zip
+build.log
+
+## OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+## Python
+__pycache__/
+*.pyc
+
+## Packager
+package.py
+package.bat
+thunderstore/
+nexusmods/

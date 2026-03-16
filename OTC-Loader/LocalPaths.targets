@@ -1,0 +1,16 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+	<PropertyGroup>
+		<!-- Root of your r2modman profile. Change this to match your local setup. -->
+		<R2ProfileRoot>C:\Users\mrell\AppData\Roaming\r2modmanPlus-local\ScheduleI\profiles\Default</R2ProfileRoot>
+
+		<!-- MelonLoader net6 directory (for reference DLLs: MelonLoader, Mono.Cecil, Newtonsoft.Json) -->
+		<MelonLoaderNet6Path>$(R2ProfileRoot)\MelonLoader\net6</MelonLoaderNet6Path>
+
+		<!-- IL2CPP dev profile mod output (loader copies to Plugins/ subfolder) -->
+		<ModOutputPath>$(R2ProfileRoot)\Mods\mrell-OverTheCounter</ModOutputPath>
+
+		<!-- Mono dev profile paths -->
+		<MonoR2ProfileRoot>C:\Users\mrell\AppData\Roaming\r2modmanPlus-local\ScheduleI\profiles\mono-dev</MonoR2ProfileRoot>
+		<MonoModOutputPath>$(MonoR2ProfileRoot)\Mods\hdlmrell-OverTheCounter</MonoModOutputPath>
+	</PropertyGroup>
+</Project>
