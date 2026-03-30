@@ -7,6 +7,9 @@
 *.user
 *.suo
 
+## Local dev paths (machine-specific)
+LocalPaths.targets
+
 ## Build artifacts
 _stage_*/
 _release_dlls/

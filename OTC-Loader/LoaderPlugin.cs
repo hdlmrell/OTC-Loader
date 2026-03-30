@@ -7,7 +7,7 @@ using MelonLoader.Utils;
 using Mono.Cecil;
 using Newtonsoft.Json;
 
-[assembly: MelonInfo(typeof(OverTheCounter.Loader.LoaderPlugin), "OTC Loader", "1.0.4", "hdlmrell", null)]
+[assembly: MelonInfo(typeof(OverTheCounter.Loader.LoaderPlugin), "OTC Loader", "1.0.5", "hdlmrell", null)]
 [assembly: MelonColor(100, 200, 180, 255)]
 
 namespace OverTheCounter.Loader
@@ -139,14 +139,33 @@ namespace OverTheCounter.Loader
             for (int i = 0; i < allDlls.Length; i++)
             {
                 string filename = Path.GetFileName(allDlls[i]);
-                string dir = Path.GetDirectoryName(allDlls[i]);
 
-                // DLLs inside a Plugins/ subfolder are MelonPlugins with their own loading — skip them.
-                skip[i] = Path.GetFileName(dir).Equals("Plugins", StringComparison.OrdinalIgnoreCase)
-                           || IsBlacklisted(filename);
+                skip[i] = IsBlacklisted(filename);
 
                 if (!skip[i])
                     branches[i] = DetectBranch(allDlls[i]);
+            }
+
+            // DLLs in Plugins/ subfolders are MelonPlugins — only process them if a branch
+            // counterpart exists in the same folder (mod ships both IL2CPP + Mono variants).
+            // Solo plugins are left alone to avoid false-positive disables.
+            for (int i = 0; i < allDlls.Length; i++)
+            {
+                if (skip[i] || branches[i] == null) continue;
+                string dir = Path.GetDirectoryName(allDlls[i]);
+                if (!Path.GetFileName(dir).Equals("Plugins", StringComparison.OrdinalIgnoreCase)) continue;
+
+                string myBase = StripBranchKeyword(Path.GetFileName(allDlls[i]));
+                bool hasCounterpart = false;
+                for (int j = 0; j < allDlls.Length; j++)
+                {
+                    if (j == i || skip[j]) continue;
+                    if (!string.Equals(Path.GetDirectoryName(allDlls[j]), dir, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (string.Equals(StripBranchKeyword(Path.GetFileName(allDlls[j])), myBase, StringComparison.OrdinalIgnoreCase))
+                    { hasCounterpart = true; break; }
+                }
+                if (!hasCounterpart)
+                    skip[i] = true;
             }
 
             int disabled = 0;

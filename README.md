@@ -42,6 +42,14 @@ Drop `OverTheCounter-Loader.dll` into your game's `Plugins` folder.
 
 ## Changelog
 
+### v1.0.5
+- Fixed branch detection for MelonPlugins in `Plugins/` subfolders — dual-branch plugins (e.g. MeshVault) are now correctly handled instead of being skipped entirely
+- Plugins with only a single variant are left alone to avoid false-positive disables
+
+### v1.0.4
+- Packaged for Thunderstore
+- Added MLVScan attestation for release builds
+
 ### v1.0.1
 - Extracted OTC Loader into a standalone project (previously bundled inside the OverTheCounter repo)
 - Added interactive whitelist management — review each incompatible mod individually and whitelist with a single click, or keep/clear the existing whitelist via popup prompts
