@@ -180,15 +180,22 @@ jobs:
             "$API_BASE/automation/attestations")
 
           if [ "$draft_status" = "409" ]; then
-            echo "Attestation already exists for this submission — fetching existing"
-            # List attestations and find the one for this submission
-            existing_json=$(curl -fsS \
-              -H "X-API-Key: $MLVSCAN_API_KEY" \
-              "$API_BASE/automation/attestations?submissionId=$submission_id")
-            attestation_id=$(echo "$existing_json" | jq -r '.[0].id // .id // empty')
+            echo "Attestation already exists for this submission — extracting from 409 response"
+            attestation_id=$(jq -r '.id // .data.id // .attestationId // empty' /tmp/draft.json)
             if [ -z "$attestation_id" ]; then
-              echo "::warning::Could not find existing attestation — extracting from 409 response"
-              attestation_id=$(jq -r '.id // .data.id // empty' /tmp/draft.json)
+              echo "409 response body:"
+              cat /tmp/draft.json
+              # Try listing attestations as fallback
+              list_status=$(curl -sS -o /tmp/list.json -w "%{http_code}" \
+                -H "X-API-Key: $MLVSCAN_API_KEY" \
+                "$API_BASE/automation/attestations?submissionId=$submission_id")
+              echo "List attestations status: $list_status"
+              cat /tmp/list.json
+              attestation_id=$(jq -r '.[0].id // .id // empty' /tmp/list.json)
+            fi
+            if [ -z "$attestation_id" ]; then
+              echo "::error::Could not extract attestation ID from 409 response or list query"
+              exit 1
             fi
           elif [ "$draft_status" -ge 200 ] && [ "$draft_status" -lt 300 ]; then
             attestation_id=$(jq -r '.id' /tmp/draft.json)
@@ -211,11 +218,18 @@ jobs:
             badge_url=$(jq -r '.badgeUrl' /tmp/publish.json)
           elif [ "$publish_status" = "409" ]; then
             echo "Attestation already published — fetching details"
-            detail_json=$(curl -fsS \
-              -H "X-API-Key: $MLVSCAN_API_KEY" \
-              "$API_BASE/automation/attestations/$attestation_id")
-            public_url=$(echo "$detail_json" | jq -r '.publicUrl')
-            badge_url=$(echo "$detail_json" | jq -r '.badgeUrl')
+            # Try extracting from 409 response body first
+            public_url=$(jq -r '.publicUrl // empty' /tmp/publish.json)
+            badge_url=$(jq -r '.badgeUrl // empty' /tmp/publish.json)
+            if [ -z "$public_url" ]; then
+              detail_status=$(curl -sS -o /tmp/detail.json -w "%{http_code}" \
+                -H "X-API-Key: $MLVSCAN_API_KEY" \
+                "$API_BASE/automation/attestations/$attestation_id")
+              echo "Detail fetch status: $detail_status"
+              cat /tmp/detail.json
+              public_url=$(jq -r '.publicUrl // empty' /tmp/detail.json)
+              badge_url=$(jq -r '.badgeUrl // empty' /tmp/detail.json)
+            fi
           else
             echo "::error::Publish failed ($publish_status):"
             cat /tmp/publish.json
