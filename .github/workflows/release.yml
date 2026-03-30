@@ -161,7 +161,7 @@ jobs:
             sleep 10
           done
 
-          # Create draft attestation
+          # Create draft attestation (409 = already exists for this submission)
           draft_payload=$(jq -n \
             --arg submissionId "$submission_id" \
             --arg publicDisplayName "$display_name" \
@@ -172,24 +172,55 @@ jobs:
               canonicalSourceUrl: $canonicalSourceUrl
             }')
 
-          draft_json=$(curl -fsS \
+          draft_status=$(curl -sS -o /tmp/draft.json -w "%{http_code}" \
             -X POST \
             -H "X-API-Key: $MLVSCAN_API_KEY" \
             -H "Content-Type: application/json" \
             -d "$draft_payload" \
             "$API_BASE/automation/attestations")
 
-          attestation_id=$(echo "$draft_json" | jq -r '.id')
-          echo "Draft attestation: $attestation_id"
+          if [ "$draft_status" = "409" ]; then
+            echo "Attestation already exists for this submission — fetching existing"
+            # List attestations and find the one for this submission
+            existing_json=$(curl -fsS \
+              -H "X-API-Key: $MLVSCAN_API_KEY" \
+              "$API_BASE/automation/attestations?submissionId=$submission_id")
+            attestation_id=$(echo "$existing_json" | jq -r '.[0].id // .id // empty')
+            if [ -z "$attestation_id" ]; then
+              echo "::warning::Could not find existing attestation — extracting from 409 response"
+              attestation_id=$(jq -r '.id // .data.id // empty' /tmp/draft.json)
+            fi
+          elif [ "$draft_status" -ge 200 ] && [ "$draft_status" -lt 300 ]; then
+            attestation_id=$(jq -r '.id' /tmp/draft.json)
+          else
+            echo "::error::Draft attestation failed ($draft_status):"
+            cat /tmp/draft.json
+            exit 1
+          fi
 
-          # Publish attestation
-          published_json=$(curl -fsS \
+          echo "Attestation ID: $attestation_id"
+
+          # Publish attestation (may already be published if 409 path)
+          publish_status=$(curl -sS -o /tmp/publish.json -w "%{http_code}" \
             -X POST \
             -H "X-API-Key: $MLVSCAN_API_KEY" \
             "$API_BASE/automation/attestations/$attestation_id/publish")
 
-          public_url=$(echo "$published_json" | jq -r '.publicUrl')
-          badge_url=$(echo "$published_json" | jq -r '.badgeUrl')
+          if [ "$publish_status" -ge 200 ] && [ "$publish_status" -lt 300 ]; then
+            public_url=$(jq -r '.publicUrl' /tmp/publish.json)
+            badge_url=$(jq -r '.badgeUrl' /tmp/publish.json)
+          elif [ "$publish_status" = "409" ]; then
+            echo "Attestation already published — fetching details"
+            detail_json=$(curl -fsS \
+              -H "X-API-Key: $MLVSCAN_API_KEY" \
+              "$API_BASE/automation/attestations/$attestation_id")
+            public_url=$(echo "$detail_json" | jq -r '.publicUrl')
+            badge_url=$(echo "$detail_json" | jq -r '.badgeUrl')
+          else
+            echo "::error::Publish failed ($publish_status):"
+            cat /tmp/publish.json
+            exit 1
+          fi
 
           echo "**$badge_label:** [![$badge_alt]($badge_url?style=split-pill)]($public_url)" > /tmp/badges.txt
 
