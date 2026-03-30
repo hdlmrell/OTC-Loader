@@ -1,5 +1,5 @@
 # OTC Loader
-**Release:** [![MLVScan Attestation](https://api.mlvscan.com/public/attestations/att_c-4SzC3Y_aFPmAdfwOzARiZ_/badge.svg?style=split-pill)](https://mlvscan.com/attestations/att_c-4SzC3Y_aFPmAdfwOzARiZ_)
+**Release:** [![MLVScan Attestation](https://api.mlvscan.com/public/attestations/att_B2Ii8JrrXqB3MKw8mtyi1h8M/badge.svg?style=split-pill)](https://mlvscan.com/attestations/att_B2Ii8JrrXqB3MKw8mtyi1h8M)
 
 **OTC Loader** is a lightweight MelonLoader plugin that automatically detects your game branch (IL2CPP or Mono) and disables any incompatible mod DLLs before they can crash MelonLoader. It works for **all mods**, not just OverTheCounter.
 
