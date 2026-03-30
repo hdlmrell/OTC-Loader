@@ -1,0 +1,284 @@
+name: Release & Attest
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-and-attest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve target ref
+        id: ref
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "target_ref=${{ github.event.release.target_commitish }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "target_ref=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+          ref: ${{ steps.ref.outputs.target_ref }}
+
+      - name: Setup .NET 6
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      - name: Download build dependencies
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view deps &>/dev/null; then
+            echo "::error::No 'deps' pre-release found. Run scripts/setup-ci-deps.sh locally to create one."
+            exit 1
+          fi
+          gh release download deps -p "deps.tar.gz" -D /tmp
+          mkdir -p "$GITHUB_WORKSPACE/deps"
+          tar -xzf /tmp/deps.tar.gz -C "$GITHUB_WORKSPACE/deps"
+
+      - name: Generate LocalPaths.targets
+        run: |
+          cat > OTC-Loader/LocalPaths.targets << EOF
+          <Project>
+            <PropertyGroup>
+              <MelonLoaderNet6Path>$GITHUB_WORKSPACE/deps/melonloader/net6</MelonLoaderNet6Path>
+            </PropertyGroup>
+          </Project>
+          EOF
+
+      - name: Build Release
+        run: dotnet build OTC-Loader/OTC-Loader.csproj -c Release
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OTC-Loader
+          path: OTC-Loader/bin/Release/netstandard2.1/OverTheCounter-Loader.dll
+
+      - name: Upload to GitHub release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            "OTC-Loader/bin/Release/netstandard2.1/OverTheCounter-Loader.dll" \
+            --clobber
+
+      - name: Check MLVScan configuration
+        id: mlvscan
+        env:
+          KEY: ${{ secrets.MLVSCAN_API_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::MLVSCAN_API_KEY not set, skipping attestation"
+          fi
+
+      - name: Publish MLVScan attestation
+        if: steps.mlvscan.outputs.enabled == 'true'
+        env:
+          MLVSCAN_API_KEY: ${{ secrets.MLVSCAN_API_KEY }}
+          API_BASE: https://api.mlvscan.com
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "release" ]; then
+            version="${{ github.event.release.tag_name }}"
+            canonical_url="${{ github.event.release.html_url }}"
+          else
+            version="${{ github.sha }}"
+            canonical_url="https://github.com/${{ github.repository }}/commit/${{ github.sha }}"
+          fi
+
+          artifact_path="OTC-Loader/bin/Release/netstandard2.1/OverTheCounter-Loader.dll"
+          display_name="OverTheCounter-Loader.dll $version"
+          badge_alt="MLVScan Attestation"
+          badge_label="Release"
+
+          if [ ! -f "$artifact_path" ]; then
+            echo "::error::Artifact not found: $artifact_path"
+            exit 1
+          fi
+
+          echo "::group::Attesting $display_name"
+
+          # Upload artifact
+          upload_status=$(curl -sS -o /tmp/upload.json -w "%{http_code}" \
+            -H "X-API-Key: $MLVSCAN_API_KEY" \
+            -F "file=@$artifact_path" \
+            "$API_BASE/files")
+
+          if [ "$upload_status" -lt 200 ] || [ "$upload_status" -ge 300 ]; then
+            echo "::error::Upload failed ($upload_status):"
+            cat /tmp/upload.json
+            exit 1
+          fi
+
+          submission_id=$(jq -r '.data.id' /tmp/upload.json)
+          echo "Submission ID: $submission_id"
+
+          # Poll for scan completion
+          for attempt in $(seq 1 60); do
+            report_status=$(curl -sS -o /tmp/report.json -w "%{http_code}" \
+              -H "X-API-Key: $MLVSCAN_API_KEY" \
+              "$API_BASE/reports/$submission_id")
+
+            if [ "$report_status" = "404" ]; then
+              echo "Waiting for submission to materialize (attempt $attempt/60)..."
+              sleep 10
+              continue
+            fi
+
+            if [ "$report_status" -lt 200 ] || [ "$report_status" -ge 300 ]; then
+              echo "::error::Report poll failed ($report_status):"
+              cat /tmp/report.json
+              exit 1
+            fi
+
+            status=$(jq -r '.status' /tmp/report.json)
+
+            if [ "$status" = "completed" ]; then
+              echo "Scan complete"
+              break
+            fi
+
+            if [ "$status" = "failed" ]; then
+              echo "::error::Scan failed:"
+              jq . /tmp/report.json
+              exit 1
+            fi
+
+            echo "Scan status: $status (attempt $attempt/60)"
+            sleep 10
+          done
+
+          # Create draft attestation (409 = already exists for this submission)
+          draft_payload=$(jq -n \
+            --arg submissionId "$submission_id" \
+            --arg publicDisplayName "$display_name" \
+            --arg canonicalSourceUrl "$canonical_url" \
+            '{
+              submissionId: $submissionId,
+              publicDisplayName: $publicDisplayName,
+              canonicalSourceUrl: $canonicalSourceUrl
+            }')
+
+          draft_status=$(curl -sS -o /tmp/draft.json -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: $MLVSCAN_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$draft_payload" \
+            "$API_BASE/automation/attestations")
+
+          if [ "$draft_status" = "409" ]; then
+            echo "Draft returned 409 — checking reason"
+            cat /tmp/draft.json
+
+            # Extract attestation ID from 409 body (duplicate submission case)
+            attestation_id=$(jq -r '.id // .data.id // .attestationId // empty' /tmp/draft.json)
+
+            if [ -z "$attestation_id" ]; then
+              # Quota or other 409 — find existing attestation by content hash
+              echo "Searching for existing attestation matching this artifact..."
+              content_hash=$(sha256sum "$artifact_path" | cut -d' ' -f1)
+              echo "Artifact SHA256: $content_hash"
+
+              list_status=$(curl -sS -o /tmp/list.json -w "%{http_code}" \
+                -H "X-API-Key: $MLVSCAN_API_KEY" \
+                "$API_BASE/automation/attestations")
+              echo "List attestations status: $list_status"
+
+              # Response is {"attestations":[...]} — find matching contentHash
+              attestation_id=$(jq -r --arg hash "$content_hash" \
+                '.attestations[] | select(.contentHash == $hash) | .id' /tmp/list.json | head -1)
+
+              if [ -z "$attestation_id" ]; then
+                echo "::error::Attestation quota reached and no existing attestation matches this artifact."
+                echo "::error::Delete old attestations at https://mlvscan.com or use a dedicated API key."
+                jq -r '.attestations[] | "\(.publicDisplayName) — \(.id)"' /tmp/list.json
+                exit 1
+              fi
+              echo "Found existing attestation for same content hash: $attestation_id"
+            fi
+          elif [ "$draft_status" -ge 200 ] && [ "$draft_status" -lt 300 ]; then
+            attestation_id=$(jq -r '.id' /tmp/draft.json)
+          else
+            echo "::error::Draft attestation failed ($draft_status):"
+            cat /tmp/draft.json
+            exit 1
+          fi
+
+          echo "Attestation ID: $attestation_id"
+
+          # Publish attestation (may already be published if 409 path)
+          publish_status=$(curl -sS -o /tmp/publish.json -w "%{http_code}" \
+            -X POST \
+            -H "X-API-Key: $MLVSCAN_API_KEY" \
+            "$API_BASE/automation/attestations/$attestation_id/publish")
+
+          if [ "$publish_status" -ge 200 ] && [ "$publish_status" -lt 300 ]; then
+            public_url=$(jq -r '.publicUrl' /tmp/publish.json)
+            badge_url=$(jq -r '.badgeUrl' /tmp/publish.json)
+          elif [ "$publish_status" = "409" ]; then
+            echo "Attestation already published — fetching details"
+            # Try extracting from 409 response body first
+            public_url=$(jq -r '.publicUrl // empty' /tmp/publish.json)
+            badge_url=$(jq -r '.badgeUrl // empty' /tmp/publish.json)
+            if [ -z "$public_url" ]; then
+              detail_status=$(curl -sS -o /tmp/detail.json -w "%{http_code}" \
+                -H "X-API-Key: $MLVSCAN_API_KEY" \
+                "$API_BASE/automation/attestations/$attestation_id")
+              echo "Detail fetch status: $detail_status"
+              cat /tmp/detail.json
+              public_url=$(jq -r '.publicUrl // empty' /tmp/detail.json)
+              badge_url=$(jq -r '.badgeUrl // empty' /tmp/detail.json)
+            fi
+          else
+            echo "::error::Publish failed ($publish_status):"
+            cat /tmp/publish.json
+            exit 1
+          fi
+
+          echo "**$badge_label:** [![$badge_alt]($badge_url?style=split-pill)]($public_url)" > /tmp/badges.txt
+
+          {
+            echo "## $display_name"
+            echo "- Public URL: $public_url"
+            echo "- Badge URL: $badge_url"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::endgroup::"
+
+      - name: Update README badges
+        if: steps.mlvscan.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+
+          if [ ! -s /tmp/badges.txt ]; then
+            echo "No badges to update"
+            exit 0
+          fi
+
+          # Remove existing MLVScan badge lines
+          sed -i '/MLVScan.*Attestation/d' README.md
+
+          # Insert new badges after line 1 (the heading)
+          sed -i "1r /tmp/badges.txt" README.md
+
+      - name: Commit badge update
+        if: steps.mlvscan.outputs.enabled == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git diff --cached --quiet || (git commit -m "ci: update MLVScan attestation badges" && git push)
