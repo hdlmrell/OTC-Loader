@@ -7,7 +7,7 @@ using MelonLoader.Utils;
 using Mono.Cecil;
 using Newtonsoft.Json;
 
-[assembly: MelonInfo(typeof(OverTheCounter.Loader.LoaderPlugin), "OTC Loader", "1.0.1", "hdlmrell", null)]
+[assembly: MelonInfo(typeof(OverTheCounter.Loader.LoaderPlugin), "OTC Loader", "1.0.3", "hdlmrell", null)]
 [assembly: MelonColor(100, 200, 180, 255)]
 
 namespace OverTheCounter.Loader
