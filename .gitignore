@@ -9,8 +9,10 @@
 
 ## Build artifacts
 _stage_*/
+_release_dlls/
 *.zip
 build.log
+deps.tar.gz
 
 ## OS
 Thumbs.db
