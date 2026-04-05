@@ -42,6 +42,13 @@ Drop `OverTheCounter-Loader.dll` into your game's `Plugins` folder.
 
 ## Changelog
 
+### v1.0.6
+- Added prominent log warning every launch when whitelisted DLLs are detected on disk — hard to miss
+- Fixed whitelisted DLLs not re-enabling until the next game restart — now re-enabled immediately when whitelisted during review
+- Fixed whitelist count popup incorrectly counting example entries that don't match real files
+- Improved restart popup — clearer "SAFE TO RUN AFTER RESTART" messaging with explicit button labels
+- Whitelisted mods are now excluded from the restart popup since they were just re-enabled
+
 ### v1.0.5
 - Fixed branch detection for MelonPlugins in `Plugins/` subfolders — dual-branch plugins (e.g. MeshVault) are now correctly handled instead of being skipped entirely
 - Plugins with only a single variant are left alone to avoid false-positive disables
