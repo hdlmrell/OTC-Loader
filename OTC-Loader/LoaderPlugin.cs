@@ -7,7 +7,7 @@ using MelonLoader.Utils;
 using Mono.Cecil;
 using Newtonsoft.Json;
 
-[assembly: MelonInfo(typeof(OverTheCounter.Loader.LoaderPlugin), "OTC Loader", "1.0.5", "hdlmrell", null)]
+[assembly: MelonInfo(typeof(OverTheCounter.Loader.LoaderPlugin), "OTC Loader", "1.0.6", "hdlmrell", null)]
 [assembly: MelonColor(100, 200, 180, 255)]
 
 namespace OverTheCounter.Loader
@@ -166,6 +166,85 @@ namespace OverTheCounter.Loader
                 }
                 if (!hasCounterpart)
                     skip[i] = true;
+            }
+
+            // ── Auto-clear stale whitelist entries ─────────────────────────────
+            // If a whitelisted wrong-branch DLL now has a compatible counterpart,
+            // the whitelist was a workaround — auto-remove it and let normal
+            // disable logic handle it.
+            {
+                string[] wl = _config.Whitelist ?? Array.Empty<string>();
+                bool wlChanged = false;
+                for (int i = 0; i < allDlls.Length; i++)
+                {
+                    if (!skip[i]) continue;
+                    string fn = Path.GetFileName(allDlls[i]);
+                    bool isWhitelisted = Array.Exists(wl, w => string.Equals(w, fn, StringComparison.OrdinalIgnoreCase));
+                    if (!isWhitelisted) continue;
+
+                    Branch? wlBranch = DetectBranch(allDlls[i]);
+                    if (wlBranch == null || wlBranch == gameBranch) continue;
+
+                    // Wrong branch — check if a correct-branch counterpart now exists
+                    string myBase = StripBranchKeyword(fn);
+                    bool hasCorrectCounterpart = false;
+                    for (int j = 0; j < allDlls.Length; j++)
+                    {
+                        if (j == i || skip[j]) continue;
+                        if (branches[j] != gameBranch) continue;
+                        if (string.Equals(StripBranchKeyword(Path.GetFileName(allDlls[j])), myBase, StringComparison.OrdinalIgnoreCase))
+                        { hasCorrectCounterpart = true; break; }
+                    }
+                    if (!hasCorrectCounterpart) continue;
+
+                    // Remove from whitelist, un-skip, and let disable pass handle it
+                    int keepCount = 0;
+                    for (int k = 0; k < wl.Length; k++)
+                    {
+                        if (!string.Equals(wl[k], fn, StringComparison.OrdinalIgnoreCase))
+                            keepCount++;
+                    }
+                    string[] newWl = new string[keepCount];
+                    int idx = 0;
+                    for (int k = 0; k < wl.Length; k++)
+                    {
+                        if (!string.Equals(wl[k], fn, StringComparison.OrdinalIgnoreCase))
+                            newWl[idx++] = wl[k];
+                    }
+                    wl = newWl;
+                    _config.Whitelist = wl;
+                    wlChanged = true;
+
+                    skip[i] = false;
+                    branches[i] = wlBranch;
+                    Logger.Warning("Auto-removed '" + fn + "' from whitelist — compatible version now available");
+                }
+                if (wlChanged) SaveConfig();
+            }
+
+            // ── Whitelist reminder — warn every launch ─────────────────────────
+            {
+                string[] wl = _config.Whitelist ?? Array.Empty<string>();
+                string whitelistedList = "";
+                for (int i = 0; i < allDlls.Length; i++)
+                {
+                    string fn = Path.GetFileName(allDlls[i]);
+                    if (Array.Exists(wl, w => string.Equals(w, fn, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (whitelistedList.Length > 0) whitelistedList += ", ";
+                        whitelistedList += fn;
+                    }
+                }
+                if (whitelistedList.Length > 0)
+                {
+                    Logger.Warning("╔══════════════════════════════════════════════════════════╗");
+                    Logger.Warning("║  WHITELISTED — these DLLs will NEVER be disabled:       ║");
+                    Logger.Warning("║  " + whitelistedList);
+                    Logger.Warning("║                                                          ║");
+                    Logger.Warning("║  → To un-whitelist, edit:                                ║");
+                    Logger.Warning("║    " + _configPath);
+                    Logger.Warning("╚══════════════════════════════════════════════════════════╝");
+                }
             }
 
             int disabled = 0;
@@ -353,13 +432,28 @@ namespace OverTheCounter.Loader
             }
 
             bool configChanged = false;
+            string[] whitelistedThisSession = new string[count];
+            int whitelistedThisSessionCount = 0;
 
             try
             {
-                if (_config.Whitelist != null && _config.Whitelist.Length > 0)
+                // Count only whitelisted entries that actually exist on disk.
+                int wlExistCount = 0;
+                if (_config.Whitelist != null)
+                {
+                    for (int w = 0; w < _config.Whitelist.Length; w++)
+                    {
+                        for (int d = 0; d < allDlls.Length; d++)
+                        {
+                            if (string.Equals(Path.GetFileName(allDlls[d]), _config.Whitelist[w], StringComparison.OrdinalIgnoreCase))
+                            { wlExistCount++; break; }
+                        }
+                    }
+                }
+                if (wlExistCount > 0)
                 {
                     string clearMsg = "OTC Loader — Whitelist Management\n\n"
-                        + "Your whitelist contains " + _config.Whitelist.Length + " mod(s).\n"
+                        + "Your whitelist contains " + wlExistCount + " mod(s).\n"
                         + "Keep the current whitelist or clear it entirely?\n\n"
                         + "[OK]     —  (Recommended) Keep current whitelist\n"
                         + "[Cancel] —  Clear whitelist";
@@ -414,6 +508,20 @@ namespace OverTheCounter.Loader
                             newWl[oldWl.Length] = filename;
                             _config.Whitelist = newWl;
                             configChanged = true;
+
+                            // Re-enable the DLL immediately so it loads this session
+                            string offPath = needsReviewPaths[i] + DisabledExt;
+                            try
+                            {
+                                if (File.Exists(offPath) && !File.Exists(needsReviewPaths[i]))
+                                    File.Move(offPath, needsReviewPaths[i]);
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Warning("Could not re-enable '" + filename + "': " + ex.Message);
+                            }
+
+                            whitelistedThisSession[whitelistedThisSessionCount++] = filename;
                             Logger.Msg("User whitelisted: " + filename);
                         }
                     }
@@ -426,22 +534,36 @@ namespace OverTheCounter.Loader
                 Logger.Warning("Interactive prompt failed (falling back to log-only): " + ex.Message);
             }
 
+            // Build list excluding DLLs the user just whitelisted
             string allModsList = "";
+            int remainingDisabled = 0;
             for (int i = 0; i < count; i++)
             {
+                string fn = Path.GetFileName(firstTimePaths[i]);
+                bool wasWhitelisted = false;
+                for (int w = 0; w < whitelistedThisSessionCount; w++)
+                {
+                    if (string.Equals(fn, whitelistedThisSession[w], StringComparison.OrdinalIgnoreCase))
+                    { wasWhitelisted = true; break; }
+                }
+                if (wasWhitelisted) continue;
                 if (allModsList.Length > 0) allModsList += ", ";
                 allModsList += Path.GetFileNameWithoutExtension(firstTimePaths[i]);
+                remainingDisabled++;
             }
+
+            if (remainingDisabled == 0) return; // All first-time disables were whitelisted
 
             Logger.Warning("First-time disable of: " + allModsList);
             Logger.Warning("A restart is recommended so the disabled DLLs are fully unloaded.");
 
-            string restartMsg = "SAFE TO RUN! Your compatible mods will work fine.\n\n"
+            string restartMsg = "SAFE TO RUN AFTER RESTART! Your compatible mods will work fine\n\n"
+                + "Close game NOW — restart via your mod manager\n\n"
                 + "OTC Loader safely disabled these incompatible mod files:\n"
                 + allModsList + "\n\n"
-                + "The runtime may have already cached the old files. A restart is recommended.\n\n"
-                + "[OK]     —  (Recommended) Close game NOW. Restart via your mod manager.\n"
-                + "[Cancel] —  Continue anyway (may cause errors)";
+                + "The runtime may have already cached the old files\n\n"
+                + "[OK] — (Recommended) Close game and restart via mod manager\n"
+                + "[Cancel] — (May cause errors) Continue anyway";
 
             try
             {
